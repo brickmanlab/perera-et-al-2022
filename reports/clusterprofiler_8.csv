@@ -1,0 +1,3 @@
+query,significant,p_value,term_size,query_size,intersection_size,precision,recall,term_id,source,term_name,effective_domain_size,source_order,parents
+query_1,TRUE,0.0486863660217923,69,23,3,0.130434782608696,0.0434782608695652,KEGG:04927,KEGG,Cortisol synthesis and secretion,8583,366,KEGG:00000
+query_1,TRUE,0.0399380603273476,83,50,4,0.08,0.0481927710843374,TF:M06867,TF,Factor: Zfp90; motif: NGKGASTTTAKA,21833,4090,TF:M00000

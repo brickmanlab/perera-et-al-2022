@@ -1,0 +1,115 @@
+---
+title: "Reviewer comments"
+author: "Martin Proks"
+date: '`r Sys.Date()`'
+knit: (function(inputFile, encoding) { 
+      rmarkdown::render(inputFile,
+                        encoding=encoding,
+                        output_format='all',
+                        output_dir='../reports/')})
+output:
+  # To create PDF report, uncomment below
+  #pdf_document:
+  #  toc: yes
+  html_document:
+    number_sections: yes
+    theme: yeti
+    toc: yes
+    toc_float: yes
+    df_print: paged
+    dev: png
+---
+
+```{r knitr, include = FALSE}
+DOCNAME = knitr::current_input()
+knitr::opts_chunk$set(autodep        = TRUE,
+                      cache          = FALSE,
+                      cache.path     = paste0("cache/", DOCNAME, "/"),
+                      cache.comments = TRUE,
+                      echo           = TRUE,
+                      error          = FALSE,
+                      fig.align      = "center",
+                      fig.path       = paste0("../reports/figures/", DOCNAME, "/"),
+                      fig.width      = 10,
+                      fig.height     = 8,
+                      message        = FALSE,
+                      warning        = FALSE)
+```
+
+# Introduction
+
+Addressing reviewer comments
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(rhdf5)
+
+counts <- as.data.frame(h5read('../data/processed/04_dataset.h5ad', 'raw/X'))
+colnames(counts) <- h5read('../data/processed/04_dataset.h5ad', '/obs/Well_ID')
+rownames(counts) <- h5read('../data/processed/04_dataset.h5ad', '/var/_index')
+
+metadata <- read.csv('../data/processed/04_dataset-metadata.csv')
+rownames(metadata) <- metadata$Well_ID
+
+subset <- CreateSeuratObject(counts, meta.data = metadata)
+
+subset@assays$RNA@scale.data <- h5read('../data/processed/04_dataset.h5ad', '/X')
+# colnames(subset@assays$RNA@scale.data) <- h5read('../data/processed/04_dataset.h5ad', '/obs/Well_ID')
+# rownames(subset@assays$RNA@scale.data) <- h5read('../data/processed/04_dataset.h5ad', '/var/_index')
+
+subset@assays$RNA@scale.data <- as.matrix(counts)
+subset@meta.data$louvain <- as.factor(subset@meta.data$louvain)
+
+umap_coor <- t(h5read('../data/processed/04_dataset.h5ad', '/obsm/X_umap'))
+rownames(umap_coor) <- h5read('../data/processed/04_dataset.h5ad', '/obs/Well_ID')
+colnames(umap_coor) <- c('UMAP_1', 'UMAP_2')
+
+subset@reductions$umap <- Seurat::CreateDimReducObject(
+  embeddings = umap_coor,
+  assay = 'RNA',
+  key = 'UMAP_'
+)
+```
+
+```{r}
+m <- FindMarkers(subset, ident.1 = "2iLIF_PrE", ident.2 = "D1", group.by = "Stage")
+m_up <- m %>% filter(avg_log2FC > 1 & p_val_adj < 0.05)
+m_down <- m %>% filter(avg_log2FC < -1 & p_val_adj < 0.05)
+
+write.csv(m_up, "../reports/05_up.csv")
+write.csv(m_down, "../reports/05_down.csv")
+```
+
+# GO-TERM enrichment
+
+```{r}
+Idents(subset) <- subset$louvain
+m <- FindAllMarkers(subset, only.pos = T)
+m.filt <- m %>% filter(avg_log2FC > 1 & p_val_adj < 0.05)
+m.filt
+```
+
+
+```{r}
+library(gprofiler2)
+library(data.table)
+for (c in unique(m.filt$cluster)) {
+  c_res <- gost(query = rownames(m.filt %>% filter(cluster == c)), organism = "mmusculus")
+  print(c_res$result)
+  # write.csv(c_res$result, file = paste0("../reports/clusterprofiler_", c, ".csv"))
+  if (!is.null(c_res$result)) {
+    fwrite(c_res$result, file = paste0("../reports/clusterprofiler_", c, ".csv"))  
+  } else{
+    print(paste0("Skipping cluster ", c))
+  }
+  
+}
+```
+
+
+# Session info
+
+```{r session-info, cache = FALSE}
+devtools::session_info()
+```

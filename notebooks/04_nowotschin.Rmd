@@ -1,0 +1,120 @@
+---
+title: "Nowotchin et al., 2019"
+author: "Martin Proks"
+date: '`r Sys.Date()`'
+knit: (function(inputFile, encoding) { 
+      rmarkdown::render(inputFile,
+                        encoding=encoding,
+                        output_format='all',
+                        output_dir='../reports/')})
+output:
+  # To create PDF report, uncomment below
+  #pdf_document:
+  #  toc: yes
+  html_document:
+    number_sections: yes
+    theme: yeti
+    toc: yes
+    toc_float: yes
+    df_print: paged
+    dev: png
+---
+
+```{r knitr, include = FALSE}
+DOCNAME = knitr::current_input()
+knitr::opts_chunk$set(autodep        = TRUE,
+                      cache          = FALSE,
+                      cache.path     = paste0("cache/", DOCNAME, "/"),
+                      cache.comments = TRUE,
+                      echo           = TRUE,
+                      error          = FALSE,
+                      fig.align      = "center",
+                      fig.path       = paste0("../reports/figures/", DOCNAME, "/"),
+                      fig.width      = 10,
+                      fig.height     = 8,
+                      message        = FALSE,
+                      warning        = FALSE)
+```
+
+# Introduction
+
+The file `../data/raw/e35_cell_types.csv` was obtained from the authors due to 
+mistake in `E3.5` annotation.
+
+```{bash, eval = FALSE}
+wget https://s3.amazonaws.com/dp-lab-data-public/mouse_endoderm/sc_endoderm_all_cells.h5ad -O ../data/raw/sc_endoderm_all_cells.h5ad
+```
+
+# Convert h5ad into Seurat
+
+```{python, eval = FALSE}
+import scanpy as sc
+import pandas as pd
+
+dataset = sc.read("../data/raw/sc_endoderm_all_cells.h5ad")
+metadata = pd.read_csv("../data/raw/e35_cell_types.csv", index_col=0)
+dataset.obs.loc[metadata.index, "CellType"] = metadata.CellType
+dataset = dataset[dataset.obs.Timepoint.isin(['E3.5', 'E4.5', 'E5.5'])].copy()
+dataset.X = dataset.X.todense()
+
+dataset.write("../data/external/nowotschin.h5ad")
+dataset.obs.to_csv("../data/external/nowotschin.metadata.csv")
+```
+
+```{r}
+library(Seurat)
+library(rhdf5)
+
+counts <- as.data.frame(h5read('../data/external/nowotschin.h5ad', '/X'))
+colnames(counts) <- h5read('../data/external/nowotschin.h5ad', '/obs/index')
+rownames(counts) <- h5read('../data/external/nowotschin.h5ad', '/var/index')
+
+metadata <- read.csv('../data/external/nowotschin.metadata.csv')
+rownames(metadata) <- metadata$index
+
+cc <- readRDS("../data/mouse_cell_cycle_genes.rds")
+
+adata <- CreateSeuratObject(counts, meta.data = metadata)
+```
+
+# Integration
+
+```{r}
+adata.list <- SplitObject(adata, split.by = "Timepoint")
+
+adata.list <- lapply(X = adata.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- CellCycleScoring(x, s.features = cc$s.genes, g2m.features = cc$g2m.genes)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+features <- SelectIntegrationFeatures(object.list = adata.list)
+```
+
+```{r}
+adata.anchors <- FindIntegrationAnchors(object.list = adata.list, anchor.features = features)
+adata.combined <- IntegrateData(anchorset = adata.anchors)
+```
+
+```{r}
+DefaultAssay(adata.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+adata.combined <- ScaleData(adata.combined, verbose = FALSE)
+adata.combined <- RunPCA(adata.combined, npcs = 30, verbose = FALSE)
+adata.combined <- RunUMAP(adata.combined, reduction = "pca", dims = 1:30)
+```
+
+```{r}
+DimPlot(adata.combined, reduction = "umap", group.by = "CellType")
+DimPlot(adata.combined, reduction = "umap", group.by = "Timepoint")
+```
+```{r}
+saveRDS(adata.combined, file = "../data/processed/nowotschin.rds")
+```
+
+# Session info
+
+```{r session-info, cache = FALSE}
+# devtools::session_info()
+```

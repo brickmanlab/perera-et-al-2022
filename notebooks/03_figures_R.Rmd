@@ -1,0 +1,488 @@
+---
+title: "Marta paper"
+author: "Martin Proks"
+date: '`r Sys.Date()`'
+knit: (function(inputFile, encoding) { 
+      rmarkdown::render(inputFile,
+                        encoding=encoding,
+                        output_format='all',
+                        output_dir='../reports/')})
+output:
+  # To create PDF report, uncomment below
+  #pdf_document:
+  #  toc: yes
+  html_document:
+    number_sections: yes
+    theme: yeti
+    toc: yes
+    toc_float: yes
+    df_print: paged
+    dev: png
+---
+
+```{r knitr, include = FALSE}
+DOCNAME = knitr::current_input()
+knitr::opts_chunk$set(autodep        = TRUE,
+                      cache          = FALSE,
+                      cache.path     = paste0("cache/", DOCNAME, "/"),
+                      cache.comments = TRUE,
+                      echo           = TRUE,
+                      error          = FALSE,
+                      fig.align      = "center",
+                      fig.path       = paste0("../reports/figures/", DOCNAME, "/"),
+                      fig.width      = 10,
+                      fig.height     = 8,
+                      message        = FALSE,
+                      warning        = FALSE)
+```
+
+# Introduction
+
+Figures for Marta's paper.
+
+```{r}
+library(rhdf5)
+library(dplyr)
+library(Seurat)
+library(scales)
+library(ggplot2)
+suppressPackageStartupMessages(library(ComplexHeatmap))
+
+plot_ps <- function(adata, by='dpt_pseudotime') {
+  f_df <- as.data.frame(adata@reductions$umap@cell.embeddings) 
+  f_df$color <- adata@meta.data[[by]]
+  
+  f_plot <- ggplot(f_df, aes(x=UMAP_1, y=UMAP_2, color=color)) +
+    geom_point() + scale_color_continuous(type = "viridis")
+  # scale_color_gradient(low="blue", high="yellow")
+  
+  return (f_plot)
+}
+```
+
+# Load dataset
+
+```{r}
+counts <- as.data.frame(h5read('../data/processed/paga.h5ad', '/X'))
+colnames(counts) <- h5read('../data/processed/paga.h5ad', '/obs/Well_ID')
+rownames(counts) <- h5read('../data/processed/paga.h5ad', '/var/_index')
+
+metadata <- read.csv('../data/processed/paga-metadata.csv')
+rownames(metadata) <- metadata$Well_ID
+
+subset <- CreateSeuratObject(counts, meta.data = metadata)
+
+subset@assays$RNA@scale.data <- as.matrix(counts)
+subset@meta.data$louvain <- as.factor(subset@meta.data$louvain)
+
+umap_coor <- t(h5read('../data/processed/paga.h5ad', '/obsm/X_umap'))
+rownames(umap_coor) <- h5read('../data/processed/paga.h5ad', '/obs/Well_ID')
+colnames(umap_coor) <- c('UMAP_1', 'UMAP_2')
+
+subset@reductions$umap <- Seurat::CreateDimReducObject(
+  embeddings = umap_coor,
+  assay = 'RNA',
+  key = 'UMAP_'
+)
+
+cc <- readRDS('../data/mouse_cell_cycle_genes.rds')
+subset <- CellCycleScoring(subset, s.features = cc$s.genes, g2m.features = cc$g2m.genes)
+
+stage_colors <- c('D0_PrE' = '#97918C',
+                  'D1' = '#11839A',
+                  'D2' = '#8E8E0D',
+                  'D3' = '#E4B32E',
+                  'D4' = '#C4651C',
+                  'D7' = '#BD4306'
+                )
+seurat_colors <- c('0' = '#379F4C',
+                   '2' = '#2096B3',
+                   '3' = '#948170',
+                   '5' = '#B22222',
+                   '6' = '#F2A082',
+                   '7' = '#CE7E41'
+                  )
+cc_colors <- c('#FAA198', '#BDB76B', '#FFE4C4')
+```
+
+# Counts of cells per cluster
+
+```{r}
+subset@meta.data %>% 
+  group_by(Stage) %>% 
+  summarize('counts' = n())
+
+subset@meta.data %>% 
+  filter(louvain %in% c('0', '2')) %>%
+  group_by(Stage) %>% 
+  summarize('counts' = n())
+
+subset@meta.data %>% 
+  filter(louvain %in% c('6', '7', '5')) %>%
+  group_by(Stage) %>% 
+  summarize('counts' = n())
+```
+
+# Normalize cell size
+
+Estimating `mean` and `median` from 2iLIF. Only take into account 2iLIF which
+were loaded with other Stages. Plate 1 which is only 2iLIF is ignored.
+
+```{r}
+full_meta <- read.csv('../data/processed/dataset-metadata.csv')
+tmp <- full_meta[(full_meta$plate_ID != '1' & full_meta$Stage == '2iLIF_PrE'), 'P3.FSC.A.Geo.Mean']
+
+cell_mean <- mean(tmp, na.rm=T)
+cell_median <- median(tmp, na.rm=T)
+subset@meta.data$cs_mean <- subset$P3.FSC.A.Geo.Mean / cell_mean
+subset@meta.data$cs_median <- subset$P3.FSC.A.Geo.Mean / cell_median
+```
+
+# Specify trajectory paths
+
+```{r}
+subset@meta.data['Status'] <- c()
+subset@meta.data[subset@meta.data$louvain %in% c('6', '7', '5'), 'Status'] <- 'PrEDiff'
+subset@meta.data[subset@meta.data$louvain %in% c('0', '2'), 'Status'] <- 'NEDiff'
+```
+
+```{r}
+DimPlot(subset, group.by = 'Stage', cols = stage_colors) + theme_classic(base_size = 12)
+DimPlot(subset, group.by = 'louvain', cols = seurat_colors) + theme_classic(base_size = 12)
+DimPlot(subset, group.by = 'phase', cols = cc_colors) + theme_classic(base_size = 12)
+plot_ps(subset) + theme_classic(base_size = 12)
+```
+
+## Bonus plot
+
+```{r}
+tmp <- subset
+Idents(tmp) <- tmp$louvain
+
+commonR::plot_proportion_bar(tmp, group.by = 'Stage', order = c('3', '0', '2', '6', '7', '5')) + 
+  ggtitle('Stage proportion per per cluster') +
+  scale_fill_manual(values = stage_colors) + 
+  theme_classic(base_size = 12)
+
+p1 <- commonR::plot_proportion_bar(tmp[, tmp$louvain == '3'], group.by = 'Stage') + 
+  facet_grid(cols = vars('PrEDiff')) +
+  scale_fill_manual(values = stage_colors) +
+  theme(legend.position="none")
+
+p2 <- commonR::plot_proportion_bar(tmp[, tmp$Status == 'NEDiff'], group.by = 'Stage') + 
+  facet_grid(cols = vars('NEDiff')) +
+  scale_fill_manual(values = stage_colors) +
+  theme(legend.position="none")
+
+p3 <- commonR::plot_proportion_bar(tmp[, tmp$Status == 'PrEDiff'], group.by = 'Stage',
+                                   order = c('6', '7', '5')) + 
+  facet_grid(cols = vars('PrEDiff')) +
+  scale_fill_manual(values = as.vector(stage_colors), breaks=names(stage_colors), drop=F)
+  
+p1 + p2 + p3
+```
+
+# Figure #1
+
+Heatmap of endoderm markers markers visualized in D0, D2 and D7.
+Should be progressive
+
+```{r}
+genes <- c("Leo1", "Rtf1", "Tnrc6c", "Fn1", "Nanog", "Sox2", "Nodal", "Cdc73", "Ctr9",
+  "Ctnnb1", "Itgav", "Paf1", "Pou5f1", "Smad2", "Dusp5", "Hnf1b", "Sox7", "Eomes", "Dusp1", "Hsbp1", "Itga5",
+  "Gata4", "Setd2", "Sox17", "Dkk1", "Dusp4", "Gata6")
+
+tmp <- subset[, subset$louvain %in% c('3', '6', '7', '5') & subset$Stage %in% c('D0_PrE', 'D2', 'D7')]
+DoHeatmap(tmp, features = genes, group.by = 'Stage', angle = 15, group.colors = stage_colors) +
+  scale_fill_gradientn(colors = c("blue", "white", "red"))
+
+# dittoHeatmap(tmp, genes, order.by = "Stage", annot.by = c("Stage"))
+mat <- GetAssayData(tmp[genes, ]) %>% as.matrix()
+cluster_anno <- tmp[genes, ]$Stage
+
+col_fun = circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+Heatmap(mat, 
+        name = 'Expression',
+        column_split = factor(cluster_anno),
+        show_column_names = F,
+        show_column_dend = F,
+        show_row_dend = F,
+        cluster_rows = T,
+        cluster_columns = F,
+        col = col_fun,
+        top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(
+          fill = c('#948170', '#379F4C', '#2096B3', '#F2A082', '#CE7E41', '#B22222')))
+        )
+)
+```
+
+```{r}
+DoHeatmap(subset, features = genes, group.by = 'louvain', angle = 15) +
+  scale_fill_gradientn(colors = c("blue", "white", "red"))
+
+mat <- GetAssayData(subset[genes, ]) %>% as.matrix()
+cluster_anno <- factor(subset[genes, ]$louvain, levels = c('3', '0', '2', '6', '7', '5'))
+col_fun = circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+Heatmap(mat, 
+        name = 'Expression',
+        column_split = factor(cluster_anno),
+        show_column_names = F,
+        show_column_dend = F,
+        show_row_dend = F,
+        cluster_rows = T,
+        cluster_columns = F,
+        col = col_fun,
+        top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(
+          fill = c('#948170', '#379F4C', '#2096B3', '#F2A082', '#CE7E41', '#B22222')))
+        )
+)
+```
+
+# Figure #2
+
+Bar plot of cell cycle from D0 to D7.
+
+```{r}
+tmp <- subset[, subset$louvain %in% c('3', '7', '6', '5')]
+
+Idents(tmp) <- tmp$Stage
+commonR::plot_proportion_bar(tmp, group.by = 'Phase') + 
+  scale_fill_manual(values=cc_colors) +
+  theme_classic(base_size = 12) +
+  ggtitle('Cell cycle progression in PrEDiff trajectory')
+```
+
+# Figure #3
+
+## Hhex expression from FACS
+
+```{r}
+plot_ps(subset, by='P3.mCherry.561D.A.Geo.Mean') + 
+  theme_classic(base_size = 12) +
+  ggtitle('FACS Hhex expression')
+
+df <- subset@meta.data %>% filter(louvain == '3')
+p1 <- ggplot(df, aes(x=louvain, y=P3.mCherry.561D.A.Geo.Mean, fill=louvain)) + 
+  geom_boxplot() + 
+  geom_jitter(width=0.1,alpha=0.2) +
+  labs(fill = 'Clusters') + xlab("Clusters") + ylab("FCS Hhex expression") +
+  coord_cartesian(ylim = c(0, 4000)) +
+  scale_fill_manual("legend", values = seurat_colors) +
+  theme(legend.position="none") +
+  facet_grid(cols = vars('D0_PrE'))
+
+df <- subset@meta.data %>% filter(louvain %in% c('0', '2'))
+df$louvain <- factor(df$louvain, levels = c('0', '2'))
+p2 <- ggplot(df, aes(x=louvain, y=P3.mCherry.561D.A.Geo.Mean, fill=louvain)) + 
+  geom_boxplot() + 
+  geom_jitter(width=0.1,alpha=0.2) +
+  labs(fill = 'Clusters') + xlab("Clusters") + ylab("FCS Hhex expression") +
+  coord_cartesian(ylim = c(0, 4000)) +
+  scale_fill_manual("legend", values = seurat_colors) +
+  theme(legend.position="none") +
+  facet_grid(cols = vars('NEDiff'))
+
+df <- subset@meta.data %>% filter(louvain %in% c('6', '7', '5'))
+df$louvain <- factor(df$louvain, levels = c('6', '7', '5'))
+p3 <- ggplot(df, aes(x=louvain, y=P3.mCherry.561D.A.Geo.Mean, fill=louvain)) + 
+  geom_boxplot() + 
+  geom_jitter(width=0.1,alpha=0.2) +
+  labs(fill = 'Clusters') + xlab("Clusters") + ylab("FCS Hhex expression") +
+  coord_cartesian(ylim = c(0, 4000)) +
+  scale_fill_manual("legend", values = seurat_colors) +
+  theme(legend.position="none") +
+  facet_grid(cols = vars('PrEDiff'))
+
+p1 + p2 + p3
+```
+
+```{r}
+df <- subset@meta.data
+df$louvain <- factor(df$louvain, levels = c('3', '0', '2', '6', '7', '5'))
+ggplot(df, aes(x=louvain, y=P3.mCherry.561D.A.Geo.Mean, fill=louvain)) + 
+  geom_boxplot() + 
+  geom_jitter(width=0.1,alpha=0.2) +
+  scale_fill_manual("legend", values = seurat_colors) +
+  labs(fill = 'Clusters') + xlab("Clusters") + ylab("FCS Hhex expression") +
+  theme_classic(base_size = 12)
+```
+
+# Figure #4
+
+## Cell size
+
+**Problem**: `D0` in from pseudotime is later then `D1`. I can redo the pseudotime
+by removing `2iLIF` and setting `D0` as a starting point. Otherwise I can start
+just ignore the `D0`.
+
+```{r}
+df <- subset@meta.data %>%
+  filter(louvain %in% c('3', '6', '7', '5')) %>%
+  dplyr::select(louvain, cs_mean, cs_median, dpt_pseudotime, Stage) %>%
+  dplyr::filter(!is.na(cs_mean)) %>%
+  dplyr::arrange(dpt_pseudotime)
+
+ggplot() + 
+  geom_point(data=df, aes(x=dpt_pseudotime, y=cs_mean, color=Stage)) +
+  geom_smooth(data=df, aes(x=dpt_pseudotime, y=cs_mean)) +
+  ggtitle('Mean cell size normalized by 2iLIF') +
+  scale_color_manual("legend", values = stage_colors) +
+  ylim(0, 2)
+
+ggplot() + 
+  geom_point(data=df, aes(x=dpt_pseudotime, y=cs_median, color=Stage)) +
+  geom_smooth(data=df, aes(x=dpt_pseudotime, y=cs_median)) +
+  scale_color_manual("legend", values = stage_colors) +
+  ggtitle('Median cell size normalized by 2iLIF') +
+  ylim(0, 2)
+```
+
+# Figure #5 - Signaling pathways from CAT
+
+Figures can be found in `../reports/`
+
+# Figure #6 - _vivo_ vs _vitro_
+
+Source code stolen from **Jose** with his blessing. 
+
+```{r}
+library(GeneOverlap)
+library(reshape2)
+library(ggplot2)
+
+marker_database <- read.delim('../data/marker_database.tsv', stringsAsFactors=FALSE)
+marker_database$genes <- strsplit(tolower(marker_database$genes), split = ",")
+
+database_lists <- marker_database$genes
+names(database_lists) <- paste(marker_database$publication, "|", marker_database$cluster)
+
+data(GeneOverlap)
+genomic_size <- gs.RNASeq
+
+# scrna-seq markers per louvain cluster
+my_list <- lapply(
+  list.files("../data/markers/", full.names = T), FUN = function(x){
+    return(tolower(read.csv(x, header = F)$V1))
+  })
+names(my_list) <- gsub(pattern = ".txt", replacement = "", x = list.files("../data/markers/"))
+
+# run GOM
+gom.obj <- newGOM(gsetA = my_list, gsetB = database_lists, genome.size = genomic_size)
+
+# extract data
+pvals <- getMatrix(gom.obj, name = "pval")
+odds <- getMatrix(gom.obj, name = "odds.ratio")
+log_odds <- log2(odds)
+```
+
+## Heatmap based on p-value
+
+```{r}
+# heatmap based on p-values
+melt_pvals <- melt(pvals)
+colnames(melt_pvals) <- c("Louvain", "Database_lists","value")
+
+melt_pvals$Study <- unlist(lapply(strsplit(as.character(melt_pvals$Database_lists), split =  "|", fixed = T), "[", 1))
+melt_pvals$Study <- trimws(melt_pvals$Study)
+
+melt_pvals$cell_type <- unlist(lapply(strsplit(as.character(melt_pvals$Database_lists), split =  "|", fixed = T), "[", 2))
+melt_pvals$cell_type <- trimws(melt_pvals$cell_type)
+
+melt_pvals$Louvain <- factor(melt_pvals$Louvain, levels = c('3', '0', '2', '6', '7', '5'))
+ggplot(melt_pvals) + geom_tile(aes(x = Louvain, y = cell_type, fill = -log10(value)), color = "white") + 
+  #coord_equal() + # Makes the heatmap tiles square, not compatible with facet_grid
+  labs(x = "Louvain", y = "Database gene lists", fill = "-log10(p-value)") +
+  scale_fill_distiller(palette = "Spectral") +
+  facet_grid(Study~., scales = "free", space = "free_y") +
+  theme(axis.text.x = element_text(angle = 90), strip.text.y = element_text(angle = 0)) 
+```
+
+## Heatmap based on log-odds ratio
+
+```{r}
+melt_logodds <- melt(log_odds)
+colnames(melt_logodds) <- c("Louvain","Database_lists","value")
+
+melt_logodds$Study <- unlist(lapply(strsplit(as.character(melt_logodds$Database_lists), split =  "|", fixed = T), "[", 1))
+melt_logodds$Study <- trimws(melt_logodds$Study)
+
+melt_logodds$cell_type <- unlist(lapply(strsplit(as.character(melt_logodds$Database_lists), split =  "|", fixed = T), "[", 2))
+melt_logodds$cell_type <- trimws(melt_logodds$cell_type)
+
+melt_logodds$Louvain <- factor(melt_logodds$Louvain, levels = c('3', '0', '2', '6', '7', '5'))
+ggplot(melt_logodds) + geom_tile(aes(x = Louvain, y = cell_type, fill = -log10(value)), color = "white") + 
+  #coord_equal() + # Makes the heatmap tiles square, not compatible with facet_grid
+  labs(x = "PC gene lists", y = "Database gene lists", fill = "log2(odds ratio)") +
+  scale_fill_distiller(palette = "Spectral") +
+  facet_grid(Study~., scales = "free", space = "free_y") +
+  theme(axis.text.x = element_text(angle = 90), strip.text.y = element_text(angle = 0))
+```
+
+# Figure #7 - Apoptosis
+
+## Positive regulation of apoptotic signaling pathway (GO:2001235)
+
+```{r}
+# Subset for HVG
+tmp <- FindVariableFeatures(subset, selection.method = "vst", nfeatures = 2000)
+tmp <- tmp[VariableFeatures(tmp)]
+
+# http://www.informatics.jax.org/go/term/GO:2001235
+df <- readxl::read_xlsx('../data/GO_term_summary_20210202_110248.xlsx')
+genes <- unique(df$Symbol)
+inter <- intersect(genes, rownames(tmp))
+
+mat <- GetAssayData(tmp[inter, ]) %>% as.matrix()
+cluster_anno <- factor(tmp[inter, ]$louvain, levels = c('3', '0', '2', '6', '7', '5'))
+
+col_fun = circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+Heatmap(mat, 
+        name = 'Expression',
+        column_split = factor(cluster_anno),
+        show_column_names = F,
+        show_column_dend = F,
+        show_row_dend = F,
+        cluster_rows = T,
+        cluster_columns = F,
+        col = col_fun,
+        top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(
+          fill = c('#948170', '#379F4C', '#2096B3', '#F2A082', '#CE7E41', '#B22222')))
+        )
+)
+```
+
+## Apoptotic signaling pathway (GO:0097190)
+
+```{r, fig.height=15}
+# Subset for HVG
+tmp <- FindVariableFeatures(subset, selection.method = "vst", nfeatures = 2000)
+tmp <- tmp[VariableFeatures(tmp)]
+
+# http://www.informatics.jax.org/go/term/GO:0097190
+df <- readxl::read_xlsx('../data/GO_term_summary_20210202_144752.xlsx')
+genes <- unique(df$Symbol)
+inter <- intersect(genes, rownames(tmp))
+
+mat <- GetAssayData(tmp[inter, ]) %>% as.matrix()
+cluster_anno <- factor(tmp[inter, ]$louvain, levels = c('3', '0', '2', '6', '7', '5'))
+
+col_fun = circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+Heatmap(mat, 
+        name = 'Expression',
+        column_split = factor(cluster_anno),
+        show_column_names = F,
+        show_column_dend = F,
+        show_row_dend = F,
+        cluster_rows = T,
+        cluster_columns = F,
+        col = col_fun,
+        top_annotation = HeatmapAnnotation(foo = anno_block(gp = gpar(
+          fill = c('#948170', '#379F4C', '#2096B3', '#F2A082', '#CE7E41', '#B22222')))
+        )
+)
+```
+
