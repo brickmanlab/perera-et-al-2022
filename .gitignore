@@ -13,3 +13,5 @@ notebooks/0[1-3]*
 reports/0[1-3]*.html
 reports/figures/03_figures_R.Rmd
 reports/clusterprofiles.key
+
+zenodo/
